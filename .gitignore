@@ -1,0 +1,22 @@
+# Ignore everything
+*
+
+# Allow directory structure
+!*/
+
+# Project files
+!.gitignore
+!pyproject.toml
+!justfile
+!mkdocs.yml
+!README.md
+!LICENSE
+
+# Source code
+!src/**/*.py
+
+# Docs
+!docs/**/*.md
+
+# CI/CD
+!.github/**/*.yml
