@@ -1,10 +1,8 @@
-import logging
-
 import click
 
 from mooshroom.auth import device_code_login
 from mooshroom.config import AUTH_FILE
-from mooshroom.launcher import launch
+from mooshroom.console import console
 from mooshroom.versions import (
     delete_version,
     install_version,
@@ -15,9 +13,6 @@ from mooshroom.versions import (
 @click.group()
 def main():
     """A fast CLI Minecraft launcher and mod manager."""
-    logging.basicConfig(format="%(message)s", level=logging.INFO)
-    logging.getLogger("httpx").setLevel(logging.WARNING)
-    logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 
 # -- auth --
@@ -32,7 +27,7 @@ def auth():
 def login():
     """Log in with a Microsoft account via device code flow."""
     tokens = device_code_login()
-    click.echo(f"Logged in as {tokens.username}")
+    console.print(f"Logged in as [bold]{tokens.username}[/]")
 
 
 @auth.command()
@@ -40,9 +35,9 @@ def logout():
     """Remove stored auth tokens and log out."""
     if AUTH_FILE.exists():
         AUTH_FILE.unlink()
-        click.echo("Logged out.")
+        console.print("Logged out.")
     else:
-        click.echo("Not logged in.")
+        console.print("[info]Not logged in.[/]")
 
 
 # -- version --
@@ -58,10 +53,10 @@ def version_list():
     """List locally installed Minecraft versions."""
     installed = list_versions()
     if not installed:
-        click.echo("No versions installed.")
+        console.print("[info]No versions installed.[/]")
         return
     for v in installed:
-        click.echo(f"  {v}")
+        console.print(f"  {v}")
 
 
 @version.command()
