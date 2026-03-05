@@ -1,14 +1,14 @@
-import logging
 import subprocess
 import sys
 from string import Template
 
+import click
+
 from mooshroom.auth import refresh_or_login
 from mooshroom.config import ASSETS_DIR, DATA_DIR, LIBRARIES_DIR, VERSIONS_DIR
+from mooshroom.console import console
 from mooshroom.java import get_java_executable
 from mooshroom.versions import check_rules, get_version_meta
-
-logger = logging.getLogger(__name__)
 
 _PATH_SEP = ";" if sys.platform == "win32" else ":"
 
@@ -29,21 +29,6 @@ def _process_args(args_list: list, variables: dict[str, str]) -> list[str]:
     return result
 
 
-def _build_classpath(meta: dict) -> str:
-    paths = []
-
-    for lib in meta["libraries"]:
-        if not check_rules(lib.get("rules", [])):
-            continue
-        artifact = lib.get("downloads", {}).get("artifact")
-        if artifact:
-            paths.append(str(LIBRARIES_DIR / artifact["path"]))
-
-    version_id = meta["id"]
-    paths.append(str(VERSIONS_DIR / version_id / f"{version_id}.jar"))
-    return _PATH_SEP.join(paths)
-
-
 def launch(version_id: str):
     meta = get_version_meta(version_id)
 
@@ -52,7 +37,15 @@ def launch(version_id: str):
 
     tokens = refresh_or_login()
 
-    classpath = _build_classpath(meta)
+    lib_paths = []
+    for lib in meta["libraries"]:
+        if not check_rules(lib.get("rules", [])):
+            continue
+        artifact = lib.get("downloads", {}).get("artifact")
+        if artifact:
+            lib_paths.append(str(LIBRARIES_DIR / artifact["path"]))
+    lib_paths.append(str(VERSIONS_DIR / version_id / f"{version_id}.jar"))
+    classpath = _PATH_SEP.join(lib_paths)
 
     natives_dir = VERSIONS_DIR / version_id / "natives"
     natives_dir.mkdir(exist_ok=True)
@@ -97,12 +90,12 @@ def launch(version_id: str):
             for a in meta["minecraftArguments"].split()
         ]
     else:
-        raise RuntimeError("Unknown argument format in version metadata")
+        raise click.ClickException("Unknown argument format in version metadata")
 
     main_class = meta["mainClass"]
     cmd = [str(java_path)] + jvm_args + [main_class] + game_args
 
-    logger.info(f"Launching {version_id}...")
+    console.print(f"Launching {version_id}...")
     process = subprocess.Popen(cmd, cwd=str(game_dir))
-    logger.info(f"Game running (PID {process.pid}). Close the game window to stop.")
+    console.print(f"[info]Game running (PID {process.pid}).[/]")
     process.wait()

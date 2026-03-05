@@ -1,18 +1,17 @@
 import hashlib
 import json
-import logging
 import shutil
 import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
+import click
 import httpx
 
 from mooshroom.config import ASSETS_DIR, LIBRARIES_DIR, VERSIONS_DIR
+from mooshroom.console import console
 from mooshroom.java import get_java_executable, remove_java
-
-logger = logging.getLogger(__name__)
 
 MANIFEST_URL = "https://piston-meta.mojang.com/mc/game/version_manifest_v2.json"
 RESOURCES_URL = "https://resources.download.minecraft.net"
@@ -56,13 +55,7 @@ def _download(
                 f.write(chunk)
     if expected_sha1 and _sha1(dest) != expected_sha1:
         dest.unlink()
-        raise RuntimeError(f"SHA1 mismatch for {dest.name}")
-
-
-def fetch_manifest() -> dict:
-    r = httpx.get(MANIFEST_URL, timeout=15)
-    r.raise_for_status()
-    return r.json()
+        raise click.ClickException(f"SHA1 mismatch for {dest.name}")
 
 
 def install_version(version_id: str):
@@ -70,87 +63,92 @@ def install_version(version_id: str):
     meta_path = version_dir / f"{version_id}.json"
 
     if meta_path.exists():
-        logger.info(f"{version_id} already installed.")
+        console.print(f"[info]{version_id} already installed.[/]")
         return
 
-    logger.info("Fetching version manifest...")
-    manifest = fetch_manifest()
-    version_entry = next(
-        (v for v in manifest["versions"] if v["id"] == version_id), None
-    )
-    if not version_entry:
-        raise RuntimeError(f"Version {version_id} not found.")
-
-    version_dir.mkdir(parents=True, exist_ok=True)
-
     with httpx.Client(timeout=60, follow_redirects=True) as client:
-        logger.info("Downloading version metadata...")
-        r = client.get(version_entry["url"])
-        r.raise_for_status()
-        meta = r.json()
-        meta_path.write_text(json.dumps(meta, indent=2))
+        with console.status("[info]Fetching version manifest...[/]") as status:
+            r = client.get(MANIFEST_URL, timeout=15)
+            r.raise_for_status()
+            manifest = r.json()
+            version_entry = next(
+                (v for v in manifest["versions"] if v["id"] == version_id), None
+            )
+            if not version_entry:
+                raise click.ClickException(f"Version {version_id} not found.")
 
-        client_info = meta["downloads"]["client"]
-        jar_path = version_dir / f"{version_id}.jar"
-        logger.info("Downloading client JAR...")
-        _download(client, client_info["url"], jar_path, client_info["sha1"])
+            version_dir.mkdir(parents=True, exist_ok=True)
 
-        lib_tasks = []
-        for lib in meta["libraries"]:
-            if not check_rules(lib.get("rules", [])):
-                continue
-            downloads = lib.get("downloads", {})
-            artifact = downloads.get("artifact")
-            if artifact:
-                lib_tasks.append(
+            status.update("[info]Downloading version metadata...[/]")
+            r = client.get(version_entry["url"])
+            r.raise_for_status()
+            meta = r.json()
+            meta_path.write_text(json.dumps(meta, indent=2))
+
+            status.update("[info]Downloading client JAR...[/]")
+            client_info = meta["downloads"]["client"]
+            jar_path = version_dir / f"{version_id}.jar"
+            _download(client, client_info["url"], jar_path, client_info["sha1"])
+
+            lib_tasks = []
+            for lib in meta["libraries"]:
+                if not check_rules(lib.get("rules", [])):
+                    continue
+                downloads = lib.get("downloads", {})
+                artifact = downloads.get("artifact")
+                if artifact:
+                    lib_tasks.append(
+                        (
+                            artifact["url"],
+                            LIBRARIES_DIR / artifact["path"],
+                            artifact["sha1"],
+                        )
+                    )
+                classifiers = downloads.get("classifiers", {})
+                native_key = lib.get("natives", {}).get(_current_os())
+                if native_key and native_key in classifiers:
+                    native = classifiers[native_key]
+                    lib_tasks.append(
+                        (native["url"], LIBRARIES_DIR / native["path"], native["sha1"])
+                    )
+
+            status.update("[info]Downloading asset index...[/]")
+            asset_index = meta["assetIndex"]
+            index_path = ASSETS_DIR / "indexes" / f"{asset_index['id']}.json"
+            _download(client, asset_index["url"], index_path, asset_index["sha1"])
+
+            index_data = json.loads(index_path.read_text())
+            asset_tasks = []
+            for obj in index_data["objects"].values():
+                h = obj["hash"]
+                asset_tasks.append(
                     (
-                        artifact["url"],
-                        LIBRARIES_DIR / artifact["path"],
-                        artifact["sha1"],
+                        f"{RESOURCES_URL}/{h[:2]}/{h}",
+                        ASSETS_DIR / "objects" / h[:2] / h,
+                        h,
                     )
                 )
-            classifiers = downloads.get("classifiers", {})
-            native_key = lib.get("natives", {}).get(_current_os())
-            if native_key and native_key in classifiers:
-                native = classifiers[native_key]
-                lib_tasks.append(
-                    (native["url"], LIBRARIES_DIR / native["path"], native["sha1"])
-                )
 
-        asset_index = meta["assetIndex"]
-        index_path = ASSETS_DIR / "indexes" / f"{asset_index['id']}.json"
-        logger.info(f"Downloading asset index ({asset_index['id']})...")
-        _download(client, asset_index["url"], index_path, asset_index["sha1"])
+            all_tasks = lib_tasks + asset_tasks
 
-        index_data = json.loads(index_path.read_text())
-        asset_tasks = []
-        for obj in index_data["objects"].values():
-            h = obj["hash"]
-            asset_tasks.append(
-                (f"{RESOURCES_URL}/{h[:2]}/{h}", ASSETS_DIR / "objects" / h[:2] / h, h)
+            status.update(
+                f"[info]Downloading {len(lib_tasks)} libraries and {len(asset_tasks)} assets...[/]"
             )
+            local = threading.local()
 
-        all_tasks = lib_tasks + asset_tasks
-        logger.info(
-            f"Downloading {len(lib_tasks)} libraries and {len(asset_tasks)} assets..."
-        )
+            def _download_task(t):
+                if not hasattr(local, "client"):
+                    local.client = httpx.Client(timeout=60, follow_redirects=True)
+                _download(local.client, *t)
 
-        local = threading.local()
-
-        def _download_task(t):
-            if not hasattr(local, "client"):
-                local.client = httpx.Client(timeout=60, follow_redirects=True)
-            _download(local.client, *t)
-
-        with ThreadPoolExecutor(max_workers=8) as pool:
-            list(pool.map(_download_task, all_tasks))
+            with ThreadPoolExecutor(max_workers=8) as pool:
+                list(pool.map(_download_task, all_tasks))
 
     java_version = meta.get("javaVersion", {}).get("majorVersion")
     if java_version:
-        logger.info(f"Ensuring Java {java_version} is available...")
         get_java_executable(java_version)
 
-    logger.info(f"Installed {version_id}.")
+    console.print(f"Installed {version_id}.")
 
 
 def list_installed() -> list[str]:
@@ -166,7 +164,7 @@ def list_installed() -> list[str]:
 def get_version_meta(version_id: str) -> dict:
     meta_path = VERSIONS_DIR / version_id / f"{version_id}.json"
     if not meta_path.exists():
-        raise RuntimeError(f"Version {version_id} is not installed.")
+        raise click.ClickException(f"Version {version_id} is not installed.")
     return json.loads(meta_path.read_text())
 
 
@@ -190,12 +188,12 @@ def _prune_dir(directory: Path, keep: set, key=None) -> int:
 def delete_version(version_id: str):
     version_dir = VERSIONS_DIR / version_id
     if not version_dir.exists():
-        raise RuntimeError(f"Version {version_id} is not installed.")
+        raise click.ClickException(f"Version {version_id} is not installed.")
 
     meta = get_version_meta(version_id)
     java_version = meta.get("javaVersion", {}).get("majorVersion")
     shutil.rmtree(version_dir)
-    logger.info(f"Removed {version_id}.")
+    console.print(f"Removed {version_id}.")
 
     # Single pass over remaining versions for both cleanup and java check
     installed = list_installed()
@@ -240,11 +238,16 @@ def delete_version(version_id: str):
     if java_version and java_version not in needed_java:
         remove_java(java_version)
 
-    removed = _prune_dir(
-        LIBRARIES_DIR, needed_libs, key=lambda f: f.relative_to(LIBRARIES_DIR)
-    )
-    removed += _prune_dir(ASSETS_DIR / "objects", needed_assets, key=lambda f: f.name)
-    removed += _prune_dir(ASSETS_DIR / "indexes", needed_indexes, key=lambda f: f.name)
+    with console.status("[info]Cleaning up unused files...[/]"):
+        removed = _prune_dir(
+            LIBRARIES_DIR, needed_libs, key=lambda f: f.relative_to(LIBRARIES_DIR)
+        )
+        removed += _prune_dir(
+            ASSETS_DIR / "objects", needed_assets, key=lambda f: f.name
+        )
+        removed += _prune_dir(
+            ASSETS_DIR / "indexes", needed_indexes, key=lambda f: f.name
+        )
 
     if removed:
-        logger.info(f"Cleaned up {removed} unused files.")
+        console.print(f"[info]Cleaned up {removed} unused files.[/]")
