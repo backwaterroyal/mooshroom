@@ -3,6 +3,7 @@ import json
 import logging
 import shutil
 import sys
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -133,8 +134,16 @@ def install_version(version_id: str):
         logger.info(
             f"Downloading {len(lib_tasks)} libraries and {len(asset_tasks)} assets..."
         )
+
+        local = threading.local()
+
+        def _download_task(t):
+            if not hasattr(local, "client"):
+                local.client = httpx.Client(timeout=60, follow_redirects=True)
+            _download(local.client, *t)
+
         with ThreadPoolExecutor(max_workers=8) as pool:
-            list(pool.map(lambda t: _download(client, *t), all_tasks))
+            list(pool.map(_download_task, all_tasks))
 
     java_version = meta.get("javaVersion", {}).get("majorVersion")
     if java_version:
