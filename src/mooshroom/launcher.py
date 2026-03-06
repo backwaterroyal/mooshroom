@@ -1,14 +1,16 @@
+import shlex
 import subprocess
 import sys
+from pathlib import Path
 from string import Template
 
 import click
 
 from mooshroom.auth import refresh_or_login
-from mooshroom.config import ASSETS_DIR, DATA_DIR, LIBRARIES_DIR, VERSIONS_DIR
+from mooshroom.config import ASSETS_DIR, LIBRARIES_DIR, VERSIONS_DIR
 from mooshroom.console import console
 from mooshroom.java import get_java_executable
-from mooshroom.versions import check_rules, get_version_meta
+from mooshroom.versions import check_rules, get_version_meta, install_version
 
 _PATH_SEP = ";" if sys.platform == "win32" else ":"
 
@@ -29,13 +31,28 @@ def _process_args(args_list: list, variables: dict[str, str]) -> list[str]:
     return result
 
 
-def launch(version_id: str):
+def launch(
+    version_id: str,
+    game_dir: Path,
+    java_args: str | None = None,
+    resolution_width: int = 854,
+    resolution_height: int = 480,
+    offline: bool = False,
+):
+    if not (VERSIONS_DIR / version_id / f"{version_id}.json").exists():
+        install_version(version_id)
     meta = get_version_meta(version_id)
 
     java_version = meta.get("javaVersion", {}).get("majorVersion", 21)
     java_path = get_java_executable(java_version)
 
-    tokens = refresh_or_login()
+    if offline:
+        username, uuid, access_token = "Player", "00000000-0000-0000-0000-000000000000", "0"
+    else:
+        tokens = refresh_or_login()
+        username, uuid, access_token = (
+            tokens.username, tokens.uuid, tokens.mc_access_token,
+        )
 
     lib_paths = []
     for lib in meta["libraries"]:
@@ -50,7 +67,6 @@ def launch(version_id: str):
     natives_dir = VERSIONS_DIR / version_id / "natives"
     natives_dir.mkdir(exist_ok=True)
 
-    game_dir = DATA_DIR / "game"
     game_dir.mkdir(parents=True, exist_ok=True)
 
     variables = {
@@ -60,19 +76,19 @@ def launch(version_id: str):
         "classpath": classpath,
         "classpath_separator": _PATH_SEP,
         "library_directory": str(LIBRARIES_DIR),
-        "auth_player_name": tokens.username,
+        "auth_player_name": username,
         "version_name": version_id,
         "game_directory": str(game_dir),
         "assets_root": str(ASSETS_DIR),
         "assets_index_name": meta["assetIndex"]["id"],
-        "auth_uuid": tokens.uuid,
-        "auth_access_token": tokens.mc_access_token,
+        "auth_uuid": uuid,
+        "auth_access_token": access_token,
         "clientid": "",
         "auth_xuid": "",
         "user_type": "msa",
         "version_type": meta.get("type", "release"),
-        "resolution_width": "854",
-        "resolution_height": "480",
+        "resolution_width": str(resolution_width),
+        "resolution_height": str(resolution_height),
         "quickPlayPath": "",
         "quickPlaySingleplayer": "",
         "quickPlayMultiplayer": "",
@@ -91,6 +107,9 @@ def launch(version_id: str):
         ]
     else:
         raise click.ClickException("Unknown argument format in version metadata")
+
+    if java_args:
+        jvm_args = shlex.split(java_args) + jvm_args
 
     main_class = meta["mainClass"]
     cmd = [str(java_path)] + jvm_args + [main_class] + game_args

@@ -161,7 +161,7 @@ def refresh_or_login() -> AuthTokens:
                 )
                 r.raise_for_status()
                 return _full_auth_flow(client, r.json())
-            except Exception:
+            except (httpx.HTTPError, KeyError, ValueError):
                 console.print("[warning]Token refresh failed, starting new login...[/]")
 
         ms_data = _ms_device_code_flow(client)
