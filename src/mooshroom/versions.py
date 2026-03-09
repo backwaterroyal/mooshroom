@@ -29,6 +29,8 @@ def check_rules(rules: list[dict]) -> bool:
     allowed = False
     for rule in rules:
         action = rule["action"] == "allow"
+        if rule.get("features"):
+            continue
         os_rule = rule.get("os")
         if os_rule is None:
             allowed = action
@@ -134,15 +136,21 @@ def install_version(version_id: str):
             status.update(
                 f"[info]Downloading {len(lib_tasks)} libraries and {len(asset_tasks)} assets...[/]"
             )
+            clients = []
             local = threading.local()
 
             def _download_task(t):
                 if not hasattr(local, "client"):
                     local.client = httpx.Client(timeout=60, follow_redirects=True)
+                    clients.append(local.client)
                 _download(local.client, *t)
 
-            with ThreadPoolExecutor(max_workers=8) as pool:
-                list(pool.map(_download_task, all_tasks))
+            try:
+                with ThreadPoolExecutor(max_workers=8) as pool:
+                    list(pool.map(_download_task, all_tasks))
+            finally:
+                for c in clients:
+                    c.close()
 
     java_version = meta.get("javaVersion", {}).get("majorVersion")
     if java_version:
@@ -172,16 +180,18 @@ def _prune_dir(directory: Path, keep: set, key=None) -> int:
     if not directory.exists():
         return 0
     removed = 0
+    dirs = []
     for f in directory.rglob("*"):
-        if f.is_file() and key(f) not in keep:
+        if f.is_dir():
+            dirs.append(f)
+        elif key(f) not in keep:
             f.unlink()
             removed += 1
-    for d in sorted(directory.rglob("*"), reverse=True):
-        if d.is_dir():
-            try:
-                d.rmdir()
-            except OSError:
-                pass
+    for d in sorted(dirs, reverse=True):
+        try:
+            d.rmdir()
+        except OSError:
+            pass
     return removed
 
 

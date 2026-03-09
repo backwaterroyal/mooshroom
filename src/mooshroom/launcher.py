@@ -47,11 +47,17 @@ def launch(
     java_path = get_java_executable(java_version)
 
     if offline:
-        username, uuid, access_token = "Player", "00000000-0000-0000-0000-000000000000", "0"
+        username, uuid, access_token = (
+            "Player",
+            "00000000-0000-0000-0000-000000000000",
+            "0",
+        )
     else:
         tokens = refresh_or_login()
         username, uuid, access_token = (
-            tokens.username, tokens.uuid, tokens.mc_access_token,
+            tokens.username,
+            tokens.uuid,
+            tokens.mc_access_token,
         )
 
     lib_paths = []

@@ -116,8 +116,11 @@ def create(name, version, java_args, resolution):
         except ValueError:
             raise click.UsageError("Resolution must be WIDTHxHEIGHT (e.g. 1920x1080).")
     create_profile(
-        name, version, java_args=java_args,
-        resolution_width=width, resolution_height=height,
+        name,
+        version,
+        java_args=java_args,
+        resolution_width=width,
+        resolution_height=height,
     )
     console.print(f"Created profile [bold]{name}[/].")
 

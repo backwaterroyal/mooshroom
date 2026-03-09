@@ -17,7 +17,7 @@ MS_DEVICE_CODE_URL = (
 MS_TOKEN_URL = "https://login.microsoftonline.com/consumers/oauth2/v2.0/token"
 XBOX_AUTH_URL = "https://user.auth.xboxlive.com/user/authenticate"
 XSTS_AUTH_URL = "https://xsts.auth.xboxlive.com/xsts/authorize"
-MC_AUTH_URL = "https://api.minecraftservices.com/authentication/loginWithXbox"
+MC_AUTH_URL = "https://api.minecraftservices.com/authentication/login_with_xbox"
 MC_PROFILE_URL = "https://api.minecraftservices.com/minecraft/profile"
 
 
@@ -89,30 +89,34 @@ def _full_auth_flow(client: httpx.Client, ms_token_data: dict) -> AuthTokens:
             },
         )
         r.raise_for_status()
-        xbox = r.json()
-        userhash = xbox["DisplayClaims"]["xui"][0]["uhs"]
+        xbox_token = r.json()["Token"]
 
         r = client.post(
             XSTS_AUTH_URL,
             json={
                 "Properties": {
                     "SandboxId": "RETAIL",
-                    "UserTokens": [xbox["Token"]],
+                    "UserTokens": [xbox_token],
                 },
                 "RelyingParty": "rp://api.minecraftservices.com/",
                 "TokenType": "JWT",
             },
         )
         r.raise_for_status()
+        xsts = r.json()
+        userhash = xsts["DisplayClaims"]["xui"][0]["uhs"]
 
-        status.update("[info]Fetching Minecraft profile...[/]")
         r = client.post(
             MC_AUTH_URL,
-            json={"identityToken": f"XBL3.0 x={userhash};{r.json()['Token']}"},
+            json={"identityToken": f"XBL3.0 x={userhash};{xsts['Token']}"},
         )
-        r.raise_for_status()
+        if r.status_code != 200:
+            raise click.ClickException(
+                f"Minecraft auth failed ({r.status_code}): {r.text}"
+            )
         mc_access_token = r.json()["access_token"]
 
+        status.update("[info]Fetching Minecraft profile...[/]")
         r = client.get(
             MC_PROFILE_URL,
             headers={"Authorization": f"Bearer {mc_access_token}"},
